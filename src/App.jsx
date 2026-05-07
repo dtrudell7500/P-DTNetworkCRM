@@ -466,6 +466,135 @@ function PinScreen({ onUnlock }) {
   );
 }
 
+// ── CSV Export ───────────────────────────────────────────────────────────────
+function exportCSV(contacts) {
+  const headers = ["name","company","role","email","phone","linkedin","location","birthday","tags","cadence","lastContacted","notes"];
+  const rows = contacts.map(c => headers.map(h => {
+    let val = h === "tags" ? (c.tags||[]).join(";") : (c[h]??"")+""
+    return `"${val.replace(/"/g,'""')}"`
+  }).join(","));
+  const csv = [headers.join(","), ...rows].join("\n");
+  const blob = new Blob([csv], {type:"text/csv"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href=url; a.download="dt-network-crm-contacts.csv"; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ── CSV Import ───────────────────────────────────────────────────────────────
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(",").map(h => h.replace(/^"|"$/g,"").trim().toLowerCase());
+  const results = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = [];
+    let cur = "", inQ = false;
+    for (let ch of lines[i]) {
+      if (ch === '"') { inQ = !inQ; continue; }
+      if (ch === "," && !inQ) { vals.push(cur); cur = ""; continue; }
+      cur += ch;
+    }
+    vals.push(cur);
+    const row = {};
+    headers.forEach((h,idx) => { row[h] = (vals[idx]||"").trim(); });
+    results.push(row);
+  }
+  return results;
+}
+
+function csvRowToContact(row) {
+  // Handles both our own export format and Google Contacts CSV
+  const name = row["name"] || row["given name"] && row["family name"]
+    ? `${row["given name"]||""} ${row["family name"]||""}`.trim()
+    : row["given name"] || row["family name"] || row["display name"] || "";
+  if (!name) return null;
+  const phone = row["phone"] || row["mobile phone"] || row["home phone"] ||
+    row["work phone"] || row["phone 1 - value"] || "";
+  const email = row["email"] || row["e-mail address"] ||
+    row["email 1 - value"] || row["e-mail 1 - value"] || "";
+  const company = row["company"] || row["organization 1 - name"] || row["organization name"] || "";
+  const role = row["role"] || row["title"] || row["job title"] || row["organization 1 - title"] || "";
+  const notes = row["notes"] || row["note"] || "";
+  const location = row["location"] || row["city"] || "";
+  const linkedin = row["linkedin"] || "";
+  const birthday = row["birthday"] || row["birthday date"] || "";
+  const tagsRaw = row["tags"] || row["labels"] || row["group membership"] || "";
+  const tags = tagsRaw ? tagsRaw.split(/[;,|]/).map(t=>t.replace(/\*/g,"").trim()).filter(Boolean) : [];
+  const cadence = parseInt(row["cadence"]) || null;
+  const lastContacted = row["lastcontacted"] || row["last contacted"] || null;
+  return {
+    id: Date.now().toString() + Math.random().toString(36).slice(2),
+    name, company, role, email, phone, linkedin, location, birthday,
+    tags, cadence, lastContacted, notes: notes,
+    photo: null, photoUrl: "", coords: null, interactions: []
+  };
+}
+
+// ── vCard Import ─────────────────────────────────────────────────────────────
+function parseVCF(text) {
+  const contacts = [];
+  const cards = text.split(/BEGIN:VCARD/i).filter(c=>c.trim());
+  for (const card of cards) {
+    const lines = card.replace(/\r\n[\t ]/g," ").replace(/\r\n/g,"\n").split("\n");
+    const get = (prefix) => {
+      const line = lines.find(l=>l.toUpperCase().startsWith(prefix.toUpperCase()));
+      return line ? line.split(":").slice(1).join(":").trim() : "";
+    };
+    const getAll = (prefix) => lines.filter(l=>l.toUpperCase().startsWith(prefix.toUpperCase()))
+      .map(l=>l.split(":").slice(1).join(":").trim());
+
+    const fn = get("FN");
+    if (!fn) continue;
+
+    // Phone — take first mobile or first available
+    const telLines = lines.filter(l=>/^TEL/i.test(l));
+    const mobileLine = telLines.find(l=>/CELL|MOBILE/i.test(l)) || telLines[0];
+    const phone = mobileLine ? mobileLine.split(":").slice(1).join(":").trim() : "";
+
+    // Email
+    const emailLines = lines.filter(l=>/^EMAIL/i.test(l));
+    const email = emailLines.length ? emailLines[0].split(":").slice(1).join(":").trim() : "";
+
+    // Org
+    const org = get("ORG").split(";")[0];
+    const title = get("TITLE");
+
+    // Address — get city
+    const adrLine = lines.find(l=>/^ADR/i.test(l));
+    let location = "";
+    if (adrLine) {
+      const parts = adrLine.split(":").slice(1).join(":").split(";");
+      // ADR: PO;ext;street;city;region;postal;country
+      location = [parts[3],parts[4],parts[6]].filter(Boolean).map(s=>s.trim()).filter(Boolean).join(", ");
+    }
+
+    // Birthday
+    let birthday = "";
+    const bdayRaw = get("BDAY");
+    if (bdayRaw) {
+      const digits = bdayRaw.replace(/\D/g,"");
+      if (digits.length === 8) birthday = `${digits.slice(0,4)}-${digits.slice(4,6)}-${digits.slice(6,8)}`;
+      else if (digits.length === 4) birthday = `0000-${digits.slice(0,2)}-${digits.slice(2,4)}`;
+    }
+
+    // Note
+    const note = get("NOTE").replace(/\\n/g,"\n").replace(/\\,/g,",");
+
+    // URL — check for linkedin
+    const urls = getAll("URL");
+    const linkedin = (urls.find(u=>/linkedin/i.test(u))||"").replace(/^https?:\/\/(www\.)?linkedin\.com\/in\//,"").replace(/\/$/,"");
+
+    contacts.push({
+      id: Date.now().toString() + Math.random().toString(36).slice(2),
+      name: fn, company: org, role: title, email, phone,
+      linkedin, location, birthday, tags: [], cadence: null,
+      lastContacted: null, notes: note,
+      photo: null, photoUrl: "", coords: null, interactions: []
+    });
+  }
+  return contacts;
+}
+
 // ── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   const [unlocked, setUnlocked] = useState(()=>sessionStorage.getItem(SESSION_KEY)==="1");
@@ -492,6 +621,9 @@ export default function App() {
   const [editingContact, setEditingContact] = useState(null);
   const [tokenInput, setTokenInput] = useState(ghToken);
   const [repoInput, setRepoInput]   = useState(ghRepo);
+  const [importResult, setImportResult] = useState(null); // {added, skipped, errors}
+  const csvRef = useRef();
+  const vcfRef = useRef();
 
   useEffect(()=>{ if(ghToken&&ghRepo) loadContacts(); },[]);
 
@@ -519,6 +651,46 @@ export default function App() {
     localStorage.setItem("gh_token",tokenInput); localStorage.setItem("gh_repo",repoInput);
     setGhToken(tokenInput); setGhRepo(repoInput);
     setShowSettings(false); setTimeout(()=>loadContacts(),100);
+  }
+
+  function handleImport(text, parser) {
+    const parsed = parser(text);
+    const existing = new Set(contacts.map(c=>`${c.name.toLowerCase()}|${(c.email||"").toLowerCase()}`));
+    const toAdd = [], skipped = [], errors = [];
+    for (const raw of parsed) {
+      try {
+        const c = typeof raw === "object" && raw.name ? raw : csvRowToContact(raw);
+        if (!c) { errors.push("Row skipped — no name"); continue; }
+        const key = `${c.name.toLowerCase()}|${(c.email||"").toLowerCase()}`;
+        if (existing.has(key)) { skipped.push(c.name); continue; }
+        existing.add(key);
+        toAdd.push(c);
+      } catch(e) { errors.push(e.message); }
+    }
+    if (toAdd.length > 0) {
+      const updated = [...contacts, ...toAdd];
+      setContacts(updated); save(updated);
+    }
+    setImportResult({ added: toAdd.length, skipped: skipped.length, errors });
+  }
+
+  function handleCSVFile(e) {
+    const file = e.target.files[0]; if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const rows = parseCSV(ev.target.result);
+      handleImport(rows, r => csvRowToContact(r));
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
+  function handleVCFFile(e) {
+    const file = e.target.files[0]; if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => handleImport(parseVCF(ev.target.result), c => c);
+    reader.readAsText(file);
+    e.target.value = "";
   }
 
   function addContact() {
@@ -907,22 +1079,81 @@ export default function App() {
 
       {/* SETTINGS MODAL */}
       {showSettings&&(
-        <div className="mbg" onClick={()=>setShowSettings(false)}>
+        <div className="mbg" onClick={()=>{setShowSettings(false);setImportResult(null);}}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
+
+            {/* GitHub Sync */}
             <div style={{fontFamily:"'Cabinet Grotesk',sans-serif",fontSize:16,fontWeight:900,marginBottom:4,letterSpacing:"-0.02em"}}>GitHub Sync</div>
-            <div style={{fontSize:10,color:"#64748B",marginBottom:20,lineHeight:1.6}}>
+            <div style={{fontSize:10,color:"#64748B",marginBottom:16,lineHeight:1.6}}>
               All data stored in one JSON file in your private repo.<br/>
               Token needs <strong style={{color:"#CBD5E1"}}>repo</strong> scope — create at github.com → Settings → Developer settings → Personal access tokens.
             </div>
             <div style={{marginBottom:12}}><span className="fl">Personal Access Token</span><input type="password" value={tokenInput} onChange={e=>setTokenInput(e.target.value)} placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"/></div>
-            <div style={{marginBottom:20}}><span className="fl">Repository (owner/repo)</span><input type="text" value={repoInput} onChange={e=>setRepoInput(e.target.value)} placeholder="yourusername/my-private-repo"/></div>
-            <div style={{fontSize:9,color:"#475569",marginBottom:16,lineHeight:1.7,background:"#1E293B",padding:"10px 12px",borderRadius:3}}>
+            <div style={{marginBottom:12}}><span className="fl">Repository (owner/repo)</span><input type="text" value={repoInput} onChange={e=>setRepoInput(e.target.value)} placeholder="yourusername/my-private-repo"/></div>
+            <div style={{fontSize:9,color:"#475569",marginBottom:12,lineHeight:1.7,background:"#1E293B",padding:"10px 12px",borderRadius:3}}>
               Saves to: <span style={{color:"#38BDF8"}}>{repoInput||"your-repo"}/network-crm/contacts.json</span>
             </div>
-            <div style={{display:"flex",gap:10}}>
+            <div style={{display:"flex",gap:10,marginBottom:24}}>
               <button className="btn btn-primary" onClick={saveSettings}>Save & Connect</button>
-              <button className="btn btn-ghost" onClick={()=>setShowSettings(false)}>Cancel</button>
+              <button className="btn btn-ghost" onClick={()=>{setShowSettings(false);setImportResult(null);}}>Cancel</button>
             </div>
+
+            {/* Divider */}
+            <div style={{borderTop:"1px solid #1E293B",marginBottom:20}}/>
+
+            {/* Export */}
+            <div style={{fontFamily:"'Cabinet Grotesk',sans-serif",fontSize:14,fontWeight:800,marginBottom:8,letterSpacing:"-0.01em"}}>Export</div>
+            <div style={{fontSize:10,color:"#64748B",marginBottom:12,lineHeight:1.6}}>
+              Download all contacts as a CSV file. Opens in Excel, Google Sheets, or Numbers.
+            </div>
+            <button className="btn btn-ghost" style={{width:"100%",marginBottom:4,fontSize:11}} onClick={()=>exportCSV(contacts)}>
+              ⬇ Export {contacts.length} contacts to CSV
+            </button>
+
+            {/* Divider */}
+            <div style={{borderTop:"1px solid #1E293B",margin:"20px 0"}}/>
+
+            {/* Import */}
+            <div style={{fontFamily:"'Cabinet Grotesk',sans-serif",fontSize:14,fontWeight:800,marginBottom:8,letterSpacing:"-0.01em"}}>Import Contacts</div>
+            <div style={{fontSize:10,color:"#64748B",marginBottom:14,lineHeight:1.6}}>
+              Duplicate contacts (matching name + email) are skipped automatically.
+            </div>
+
+            {/* CSV Import */}
+            <div style={{marginBottom:12}}>
+              <span className="fl">CSV File</span>
+              <div style={{fontSize:9,color:"#475569",marginBottom:6,lineHeight:1.6}}>
+                Supports: DT Network CRM export, Google Contacts CSV (File → Export → Google CSV)
+              </div>
+              <input ref={csvRef} type="file" accept=".csv,text/csv" style={{display:"none"}} onChange={handleCSVFile}/>
+              <button className="btn btn-ghost" style={{width:"100%",fontSize:11}} onClick={()=>csvRef.current?.click()}>
+                ⬆ Import from CSV
+              </button>
+            </div>
+
+            {/* vCard Import */}
+            <div style={{marginBottom:16}}>
+              <span className="fl">vCard / .vcf File</span>
+              <div style={{fontSize:9,color:"#475569",marginBottom:6,lineHeight:1.6}}>
+                iPhone: icloud.com → Contacts → Select All → Export vCard<br/>
+                Google: contacts.google.com → Export → vCard (.vcf)
+              </div>
+              <input ref={vcfRef} type="file" accept=".vcf,.vcard,text/vcard" style={{display:"none"}} onChange={handleVCFFile}/>
+              <button className="btn btn-ghost" style={{width:"100%",fontSize:11}} onClick={()=>vcfRef.current?.click()}>
+                ⬆ Import from vCard (.vcf)
+              </button>
+            </div>
+
+            {/* Import Result */}
+            {importResult&&(
+              <div style={{background: importResult.added>0?"#34D39918":"#F8717118", border:`1px solid ${importResult.added>0?"#34D399":"#F87171"}`, borderRadius:4, padding:"12px 14px", fontSize:11}}>
+                {importResult.added>0&&<div style={{color:"#34D399",fontWeight:600,marginBottom:4}}>✓ {importResult.added} contact{importResult.added!==1?"s":""} imported successfully</div>}
+                {importResult.skipped>0&&<div style={{color:"#FBBF24",marginBottom:4}}>⟳ {importResult.skipped} duplicate{importResult.skipped!==1?"s":""} skipped</div>}
+                {importResult.errors.length>0&&<div style={{color:"#F87171"}}>⚠ {importResult.errors.length} row{importResult.errors.length!==1?"s":""} could not be parsed</div>}
+                {importResult.added===0&&importResult.skipped===0&&<div style={{color:"#F87171"}}>No contacts found in file.</div>}
+              </div>
+            )}
+
           </div>
         </div>
       )}
