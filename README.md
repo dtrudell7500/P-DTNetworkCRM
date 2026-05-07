@@ -1,5 +1,5 @@
 # DT Network CRM
-
+5/6/2026
 A personal networking CRM with GitHub sync, contact map, interaction timeline, and keep-in-touch reminders.
 
 ## Run locally
