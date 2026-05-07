@@ -68,6 +68,31 @@ const today = () => new Date().toISOString().slice(0,10);
 const fmtDate = (iso) => { if(!iso) return "—"; return new Date(iso+"T12:00:00").toLocaleDateString("en-CA",{month:"short",day:"numeric",year:"numeric"}); };
 const daysSince = (iso) => { if(!iso) return null; return Math.floor((Date.now()-new Date(iso+"T12:00:00"))/86400000); };
 const cadenceLabel = {7:"Weekly",14:"Biweekly",30:"Monthly",60:"Every 2 months",90:"Quarterly",180:"Every 6 months",365:"Yearly"};
+
+// Birthday helpers
+function daysUntilBirthday(bdayStr) {
+  if (!bdayStr) return null;
+  const now = new Date();
+  const [,mm,dd] = bdayStr.split("-").map(Number);
+  let next = new Date(now.getFullYear(), mm-1, dd);
+  if (next < new Date(now.getFullYear(), now.getMonth(), now.getDate())) next.setFullYear(now.getFullYear()+1);
+  return Math.ceil((next - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+}
+function fmtBirthday(bdayStr) {
+  if (!bdayStr) return "—";
+  const [yyyy,mm,dd] = bdayStr.split("-").map(Number);
+  const d = new Date(yyyy||2000, mm-1, dd);
+  const age = yyyy ? new Date().getFullYear() - yyyy : null;
+  return d.toLocaleDateString("en-CA",{month:"long",day:"numeric"}) + (age ? ` (turns ${age})` : "");
+}
+function birthdayBadge(contact) {
+  const days = daysUntilBirthday(contact.birthday);
+  if (days === null) return null;
+  if (days === 0) return { label:"🎂 Today!", color:"#F472B6" };
+  if (days <= 7) return { label:`🎂 ${days}d`, color:"#F472B6" };
+  if (days <= 30) return { label:`🎁 ${days}d`, color:"#A78BFA" };
+  return null;
+}
 const cleanPhone = (p) => p?.replace(/\D/g,"")||"";
 const linkedInUrl = (val) => {
   if(!val) return null;
@@ -88,8 +113,8 @@ const STATUS_LABEL={overdue:"Overdue",soon:"Due soon",ok:"On track",never:"Never
 const INTERACTION_TYPES=["Meeting","Call","Email","Coffee","Event","LinkedIn","Text","Other"];
 
 const SAMPLE=[
-  {id:"1",name:"Sarah Chen",company:"Azure Dynamics",role:"Cloud Architect",email:"s.chen@azuredyn.com",phone:"519-555-0142",linkedin:"sarahchen-azure",location:"Windsor, Ontario",coords:null,photo:null,photoUrl:"",tags:["Azure","IT"],cadence:30,lastContacted:new Date(Date.now()-35*86400000).toISOString().slice(0,10),notes:"Met at Windsor Tech Meetup.",interactions:[{id:"i1",date:new Date(Date.now()-35*86400000).toISOString().slice(0,10),type:"Meeting",note:"Windsor Tech Meetup — discussed Navision migration."}]},
-  {id:"2",name:"Mike Russo",company:"Logistics Partners Inc.",role:"Operations Manager",email:"mrusso@logpart.com",phone:"519-555-0287",linkedin:"",location:"Detroit, Michigan",coords:null,photo:null,photoUrl:"",tags:["Logistics","Operations"],cadence:60,lastContacted:new Date(Date.now()-20*86400000).toISOString().slice(0,10),notes:"Works with supply chain data.",interactions:[{id:"i2",date:new Date(Date.now()-20*86400000).toISOString().slice(0,10),type:"Call",note:"Quick call re: inbound logistics file spec."}]}
+  {id:"1",name:"Sarah Chen",company:"Azure Dynamics",role:"Cloud Architect",email:"s.chen@azuredyn.com",phone:"519-555-0142",linkedin:"sarahchen-azure",location:"Windsor, Ontario",coords:null,photo:null,photoUrl:"",birthday:"1990-05-12",tags:["Azure","IT"],cadence:30,lastContacted:new Date(Date.now()-35*86400000).toISOString().slice(0,10),notes:"Met at Windsor Tech Meetup.",interactions:[{id:"i1",date:new Date(Date.now()-35*86400000).toISOString().slice(0,10),type:"Meeting",note:"Windsor Tech Meetup — discussed Navision migration."}]},
+  {id:"2",name:"Mike Russo",company:"Logistics Partners Inc.",role:"Operations Manager",email:"mrusso@logpart.com",phone:"519-555-0287",linkedin:"",location:"Detroit, Michigan",coords:null,photo:null,photoUrl:"",birthday:"",tags:["Logistics","Operations"],cadence:60,lastContacted:new Date(Date.now()-20*86400000).toISOString().slice(0,10),notes:"Works with supply chain data.",interactions:[{id:"i2",date:new Date(Date.now()-20*86400000).toISOString().slice(0,10),type:"Call",note:"Quick call re: inbound logistics file spec."}]}
 ];
 
 // ── Avatar ───────────────────────────────────────────────────────────────────
@@ -461,7 +486,7 @@ export default function App() {
   const [filterTag, setFilterTag]     = useState(null);
   const [filterStatus, setFilterStatus] = useState(null);
   const [sortBy, setSortBy]     = useState("name");
-  const blank = {name:"",company:"",role:"",email:"",phone:"",linkedin:"",location:"",tags:"",cadence:"30",notes:"",photo:null,photoUrl:""};
+  const blank = {name:"",company:"",role:"",email:"",phone:"",linkedin:"",location:"",birthday:"",tags:"",cadence:"30",notes:"",photo:null,photoUrl:""};
   const [newContact, setNewContact]     = useState(blank);
   const [newInteraction, setNewInteraction] = useState({date:today(),type:"Meeting",note:""});
   const [editingContact, setEditingContact] = useState(null);
@@ -555,6 +580,7 @@ export default function App() {
     });
     if(sortBy==="overdue") list=list.sort((a,b)=>{const o={overdue:0,never:1,soon:2,ok:3};return(o[touchStatus(a)]??4)-(o[touchStatus(b)]??4);});
     else if(sortBy==="lastContacted") list=list.sort((a,b)=>{if(!a.lastContacted)return 1;if(!b.lastContacted)return -1;return b.lastContacted.localeCompare(a.lastContacted);});
+    else if(sortBy==="birthday") list=list.sort((a,b)=>{const da=daysUntilBirthday(a.birthday)??9999;const db=daysUntilBirthday(b.birthday)??9999;return da-db;});
     else list=list.sort((a,b)=>a.name.localeCompare(b.name));
     return list;
   },[contacts,search,filterTag,filterStatus,sortBy]);
@@ -656,12 +682,14 @@ export default function App() {
                 <option value="name">Sort: Name</option>
                 <option value="overdue">Sort: Overdue first</option>
                 <option value="lastContacted">Sort: Recently contacted</option>
+                <option value="birthday">Sort: Upcoming birthdays</option>
               </select>
             </div>
             <div style={{flex:1,overflowY:"auto"}}>
               {filtered.length===0&&<div style={{padding:"24px 16px",color:"#475569",fontSize:11,textAlign:"center"}}>No contacts found.</div>}
               {filtered.map(c=>{
                 const st=touchStatus(c); const ds=daysSince(c.lastContacted);
+                const bday=birthdayBadge(c);
                 return(
                   <div key={c.id} className={`crow ${selected===c.id?"active":""}`} onClick={()=>{setSelected(c.id);setPanel("detail");}}>
                     <div style={{position:"relative",flexShrink:0}}>
@@ -675,7 +703,10 @@ export default function App() {
                         {c.linkedin&&<span style={{color:"#60A5FA",marginLeft:5}}>in</span>}
                       </div>
                     </div>
-                    <div style={{fontSize:9,color:st?STATUS_COLOR[st]:"#475569",flexShrink:0}}>{ds!==null?`${ds}d`:"new"}</div>
+                    <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:3,flexShrink:0}}>
+                      {bday&&<div style={{fontSize:9,color:bday.color,fontWeight:600}}>{bday.label}</div>}
+                      <div style={{fontSize:9,color:st?STATUS_COLOR[st]:"#475569"}}>{ds!==null?`${ds}d`:"new"}</div>
+                    </div>
                   </div>
                 );
               })}
@@ -742,6 +773,15 @@ export default function App() {
                     )}
                     <div><span className="fl">Last contacted</span><div style={{fontSize:12,color:"#CBD5E1"}}>{fmtDate(c.lastContacted)}</div></div>
                     <div><span className="fl">Keep-in-touch</span><div style={{fontSize:12,color:"#CBD5E1"}}>{c.cadence?(cadenceLabel[c.cadence]||`Every ${c.cadence} days`):"Not set"}</div></div>
+                    {c.birthday&&(
+                      <div>
+                        <span className="fl">Birthday</span>
+                        <div style={{fontSize:12,color:"#CBD5E1",display:"flex",alignItems:"center",gap:8}}>
+                          {fmtBirthday(c.birthday)}
+                          {birthdayBadge(c)&&<span style={{fontSize:10,color:birthdayBadge(c).color,fontWeight:600}}>{birthdayBadge(c).label}</span>}
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {c.tags?.length>0&&<div style={{marginBottom:14}}><span className="fl">Tags</span><div style={{display:"flex",gap:5,flexWrap:"wrap"}}>{c.tags.map(t=><span key={t} className="tag">{t}</span>)}</div></div>}
@@ -831,6 +871,13 @@ export default function App() {
                         <input type="text" value={data.linkedin||""} onChange={e=>set(p=>({...p,linkedin:e.target.value}))} placeholder="username or full URL" style={{paddingLeft:44}}/>
                       </div>
                     </div>
+                  </div>
+
+                  {/* Birthday */}
+                  <div style={{marginBottom:14}}>
+                    <span className="fl">Birthday</span>
+                    <input type="text" value={data.birthday||""} onChange={e=>set(p=>({...p,birthday:e.target.value}))} placeholder="YYYY-MM-DD  (year optional, e.g. 1985-06-15 or 0000-06-15)"/>
+                    {data.birthday&&<div style={{fontSize:9,color:"#38BDF8",marginTop:3}}>{fmtBirthday(data.birthday)} · {daysUntilBirthday(data.birthday)} days away</div>}
                   </div>
 
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
